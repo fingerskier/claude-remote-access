@@ -12,7 +12,7 @@ Remote-SSH have dropped support (32-bit ARM, older glibc, etc).
 
 ```bash
 claude plugin marketplace add fingerskier/claude-plugins
-claude plugin install claude-remote-access@fingerskier-plugins
+claude plugin install remote-access@fingerskier-plugins
 ```
 
 ## Configure
