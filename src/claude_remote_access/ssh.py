@@ -11,9 +11,19 @@ import asyncio
 import hashlib
 import os
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
+
+# Windows OpenSSH does not support AF_UNIX ControlMaster sockets
+# (the multiplexer reports "getsockname failed: Not a socket" and every
+# call fails). Disable the multiplexer there; users can also force-disable
+# it elsewhere via CLAUDE_REMOTE_NO_CONTROLMASTER=1.
+_USE_CONTROL_MASTER = (
+    sys.platform != "win32"
+    and not os.environ.get("CLAUDE_REMOTE_NO_CONTROLMASTER")
+)
 
 
 class RemoteError(RuntimeError):
@@ -50,13 +60,28 @@ def _control_path_for(host: str) -> Path:
 
 
 def _common_ssh_opts(host: str) -> list[str]:
+    opts: list[str] = []
+    if _USE_CONTROL_MASTER:
+        cp = str(_control_path_for(host))
+        opts += [
+            "-o", f"ControlPath={cp}",
+            "-o", "ControlMaster=auto",
+            "-o", "ControlPersist=10m",
+        ]
+    opts += [
+        "-o", "ServerAliveInterval=30",
+        "-o", "BatchMode=yes",
+    ]
+    return opts
+
+
+def _scp_control_opts(host: str) -> list[str]:
+    if not _USE_CONTROL_MASTER:
+        return []
     cp = str(_control_path_for(host))
     return [
         "-o", f"ControlPath={cp}",
         "-o", "ControlMaster=auto",
-        "-o", "ControlPersist=10m",
-        "-o", "ServerAliveInterval=30",
-        "-o", "BatchMode=yes",
     ]
 
 
@@ -172,8 +197,7 @@ async def scp_put(
     flags = ["-r"] if recursive else []
     cmdline = [
         "scp",
-        "-o", f"ControlPath={_control_path_for(target)}",
-        "-o", "ControlMaster=auto",
+        *_scp_control_opts(target),
         "-o", "BatchMode=yes",
         *flags,
         local_path,
@@ -196,8 +220,7 @@ async def scp_get(
     flags = ["-r"] if recursive else []
     cmdline = [
         "scp",
-        "-o", f"ControlPath={_control_path_for(target)}",
-        "-o", "ControlMaster=auto",
+        *_scp_control_opts(target),
         "-o", "BatchMode=yes",
         *flags,
         f"{target}:{remote_path}",
@@ -211,6 +234,8 @@ async def scp_get(
 async def close_master(host: str | None = None) -> None:
     """Tear down the persistent control socket for a host."""
     target = resolve_host(host)
+    if not _USE_CONTROL_MASTER:
+        return
     cmdline = [
         "ssh", "-o", f"ControlPath={_control_path_for(target)}",
         "-O", "exit", target,
